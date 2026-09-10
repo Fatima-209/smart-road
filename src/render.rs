@@ -3,9 +3,7 @@ use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 
-use crate::config::{CENTER_X, CENTER_Y, LANE_WIDTH, WINDOW_HEIGHT, WINDOW_WIDTH};
-
-const CORRIDOR_HALF: f32 = LANE_WIDTH * 3.0; // 150.0, matches DESIGN.md
+use crate::config::{CENTER_X, CENTER_Y, CORRIDOR_WIDTH as CORRIDOR_HALF, WINDOW_HEIGHT, WINDOW_WIDTH};
 
 /// Every texture the renderer needs, loaded once up front. Decoded with the
 /// pure-Rust `image` crate (not SDL2_image) so we don't need another native
@@ -118,8 +116,15 @@ pub fn draw_lane_lines(canvas: &mut Canvas<Window>) -> Result<(), String> {
 }
 
 /// Draws one car sprite centered on (x, y), at the fixed on-screen size
-/// from config.rs regardless of the source image's native resolution.
-pub fn draw_car(canvas: &mut Canvas<Window>, texture: &Texture, x: f32, y: f32) -> Result<(), String> {
+/// from config.rs regardless of the source image's native resolution,
+/// rotated clockwise by `angle_degrees` around its own center.
+pub fn draw_car(
+    canvas: &mut Canvas<Window>,
+    texture: &Texture,
+    x: f32,
+    y: f32,
+    angle_degrees: f64,
+) -> Result<(), String> {
     use crate::config::{CAR_HEIGHT, CAR_WIDTH};
     let dest = Rect::new(
         (x - CAR_WIDTH / 2.0) as i32,
@@ -127,6 +132,6 @@ pub fn draw_car(canvas: &mut Canvas<Window>, texture: &Texture, x: f32, y: f32) 
         CAR_WIDTH as u32,
         CAR_HEIGHT as u32,
     );
-    canvas.copy(texture, None, Some(dest))?;
+    canvas.copy_ex(texture, None, Some(dest), angle_degrees, None, false, false)?;
     Ok(())
 }

@@ -87,18 +87,26 @@ possible later upgrade, not required for the base project.
 
 ## Safety distance & close calls
 
-- `SAFETY_DISTANCE = 45.0` px — strictly positive, enforced between any two
+- `SAFETY_DISTANCE = 60.0` px — strictly positive, enforced between any two
   vehicles whose paths can intersect (not just the same-lane vehicle ahead).
+  Deliberately kept **bigger than the car sprite's longest side**
+  (`CAR_HEIGHT = 50`) — a smaller safety distance would let two vehicles
+  pass the "safe" check (center-to-center) while their sprites still
+  visually overlap on screen.
 - `CLOSE_CALL_THRESHOLD = 25.0` px — smaller than `SAFETY_DISTANCE`, so a
   close call (gap < threshold, but no actual collision) is a real,
   reachable condition rather than an impossible one.
 
 ## Spawn cooldowns
 
-- `SPAWN_COOLDOWN_MS = 400` — minimum time between two manual (arrow-key)
+- `SPAWN_COOLDOWN_MS = 650` — minimum time between two manual (arrow-key)
   spawns **in the same direction**, so holding/spamming a key can't stack
   vehicles on top of each other. Tracked per-direction, not globally, so
-  spamming Up doesn't block Down.
+  spamming Up doesn't block Down. Chosen so that at `VELOCITY_MEDIUM`
+  (120 px/s), the previous vehicle has already moved more than
+  `SAFETY_DISTANCE` away from the spawn point by the time the cooldown
+  clears (650ms x 120px/s = 78px > 60px), so a fresh spawn can never land
+  on top of it even in the worst case.
 - `RANDOM_SPAWN_INTERVAL_MS = 800` — separate interval for the R-key's
   continuous random generation, on its own timer independent of the manual
   cooldowns above.
@@ -122,9 +130,46 @@ path — no traffic lights, no central reservation table. Reasons:
   a full time-space reservation system, but far lower risk of a subtle bug
   causing a collision, which is the one unforgivable failure mode here.
 
-Conflict enumeration across the 12 lanes and the actual velocity-control
-logic are implemented in Stage 3, not here — this section just fixes the
-strategy so Stage 3 has a target to build.
+### Implementation, first pass (straight-line traffic only)
+
+`World::desired_velocity` (in `src/world.rs`) recomputes every vehicle's
+target speed each tick from two independent rules — the vehicle obeys
+whichever is more restrictive:
+
+1. **Same-lane following.** If another vehicle in the same (direction,
+   route) lane is ahead, match speed to the gap: full speed beyond
+   `REACTION_DISTANCE`, `VELOCITY_SLOW` inside it, `VELOCITY_STOPPED` inside
+   `SAFETY_DISTANCE`. This is what stops a vehicle from rear-ending one
+   that's stopped ahead of it at the intersection.
+2. **Perpendicular right-of-way.** A vehicle within `REACTION_DISTANCE` of
+   the intersection box, and not yet inside it, yields to any perpendicular
+   vehicle that's already inside the box, or that has a lower id (spawned
+   earlier). Priority is **id-based, not live-distance-based** — an earlier
+   version compared current distance-to-box instead, which seemed more
+   "fair" (whoever's closer goes first) but broke the moment one vehicle
+   stopped: its distance freezes while the other's keeps shrinking, so the
+   two vehicles' checks could disagree with each other mid-negotiation and
+   swap who was yielding instead of one committing. Id is fixed at spawn
+   time, so it can't flip-flop like that. A vehicle already inside the box
+   is never stopped, so nothing ever halts mid-crossing.
+
+**Conflict enumeration across the 12 lanes, today:** only *perpendicular*
+direction pairs (N/S vs E/W) are treated as conflicting — that's every pair
+except (N,S) and (E,W) together. This is a deliberate, temporary
+simplification: since no route curves yet (see the movement note in
+`vehicle.rs`), every vehicle's real path *is* just its spawn direction, so
+two vehicles only physically cross paths when their directions are
+perpendicular. Parallel directions (opposing N/S, or opposing E/W) never
+cross while driving straight, regardless of route, so they're correctly
+never flagged.
+
+**This is not the final 12-lane conflict table** the spec asks for — once
+turning is implemented, a Left/Right route's *actual* path will cross lanes
+its spawn direction alone doesn't predict (e.g. a North-Left car ends up
+heading West, and can conflict with East-bound traffic it currently
+doesn't). The conflict check will need to move from "compare spawn
+directions" to "compare actual paths" at that point. Documented here so
+that revision is a known, planned step and not a surprise.
 
 ## Vehicle struct shape
 

@@ -9,20 +9,11 @@ use std::time::{Duration, Instant};
 
 use config::{WINDOW_HEIGHT, WINDOW_WIDTH};
 use render::Assets;
-use vehicle::{lane_center, Direction, Route};
+use vehicle::{facing_angle_degrees, random_route, Direction};
 use world::World;
 
 fn main() {
-    // Stage 0 smoke test: confirm World/Vehicle compile and the spawn
-    // cooldown + spawn-tile-clear logic from DESIGN.md actually behaves.
     let mut world = World::new();
-    let now = Instant::now();
-    let first = world.try_spawn(Direction::North, Route::Straight, now);
-    let immediate_repeat = world.try_spawn(Direction::North, Route::Straight, now);
-    println!(
-        "spawned {} vehicle(s); first spawn ok={first}, immediate repeat blocked (should be false)={immediate_repeat}",
-        world.vehicles.len()
-    );
 
     let sdl_context = sdl2::init().expect("failed to init SDL2");
     let video_subsystem = sdl_context.video().expect("failed to init video subsystem");
@@ -41,14 +32,12 @@ fn main() {
     let texture_creator = canvas.texture_creator();
     let assets = Assets::load(&texture_creator).expect("failed to load assets");
 
-    // Fixed test position (Stage 1): the North/Straight lane, partway up
-    // from its spawn edge, just to confirm the asset pipeline works.
-    let test_car_x = lane_center(Direction::North, Route::Straight);
-    let test_car_y = WINDOW_HEIGHT as f32 - 150.0;
-
     let mut event_pump = sdl_context.event_pump().expect("failed to create event pump");
+    let mut last_frame = Instant::now();
 
     'running: loop {
+        let now = Instant::now();
+
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. }
@@ -56,15 +45,34 @@ fn main() {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                Event::KeyDown { keycode: Some(Keycode::Up), repeat: false, .. } => {
+                    world.try_spawn(Direction::North, random_route(), now);
+                }
+                Event::KeyDown { keycode: Some(Keycode::Down), repeat: false, .. } => {
+                    world.try_spawn(Direction::South, random_route(), now);
+                }
+                Event::KeyDown { keycode: Some(Keycode::Right), repeat: false, .. } => {
+                    world.try_spawn(Direction::East, random_route(), now);
+                }
+                Event::KeyDown { keycode: Some(Keycode::Left), repeat: false, .. } => {
+                    world.try_spawn(Direction::West, random_route(), now);
+                }
                 _ => {}
             }
         }
 
+        let dt = now.duration_since(last_frame).as_secs_f32();
+        last_frame = now;
+        world.update(dt);
+
         render::draw_background(&mut canvas, &assets).expect("draw_background failed");
         render::draw_road(&mut canvas, &assets).expect("draw_road failed");
         render::draw_lane_lines(&mut canvas).expect("draw_lane_lines failed");
-        render::draw_car(&mut canvas, &assets.car_black, test_car_x, test_car_y)
-            .expect("draw_car failed");
+        for vehicle in &world.vehicles {
+            let angle = facing_angle_degrees(vehicle.direction);
+            render::draw_car(&mut canvas, &assets.car_black, vehicle.x, vehicle.y, angle)
+                .expect("draw_car failed");
+        }
         canvas.present();
 
         std::thread::sleep(Duration::from_millis(1000 / 60));
