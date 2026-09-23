@@ -3,7 +3,9 @@ use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 
-use crate::config::{CENTER_X, CENTER_Y, CORRIDOR_WIDTH as CORRIDOR_HALF, WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::config::{
+    CENTER_X, CENTER_Y, CORRIDOR_WIDTH as CORRIDOR_HALF, WINDOW_HEIGHT, WINDOW_WIDTH,
+};
 
 /// Every texture the renderer needs, loaded once up front. Decoded with the
 /// pure-Rust `image` crate (not SDL2_image) so we don't need another native
@@ -51,7 +53,11 @@ pub fn draw_background(canvas: &mut Canvas<Window>, assets: &Assets) -> Result<(
     while y < WINDOW_HEIGHT as i32 {
         let mut x = 0;
         while x < WINDOW_WIDTH as i32 {
-            canvas.copy(&assets.grass, None, Some(Rect::new(x, y, tile as u32, tile as u32)))?;
+            canvas.copy(
+                &assets.grass,
+                None,
+                Some(Rect::new(x, y, tile as u32, tile as u32)),
+            )?;
             x += tile;
         }
         y += tile;
@@ -84,11 +90,23 @@ pub fn draw_road(canvas: &mut Canvas<Window>, assets: &Assets) -> Result<(), Str
 /// roads). The two median lines (x=CENTER_X and y=CENTER_Y, separating
 /// opposing traffic) are drawn yellow; the rest are white.
 pub fn draw_lane_lines(canvas: &mut Canvas<Window>) -> Result<(), String> {
-    let offsets = [-CORRIDOR_HALF, -100.0, -50.0, 0.0, 50.0, 100.0, CORRIDOR_HALF];
+    let offsets = [
+        -CORRIDOR_HALF,
+        -100.0,
+        -50.0,
+        0.0,
+        50.0,
+        100.0,
+        CORRIDOR_HALF,
+    ];
 
     for &offset in &offsets {
         let x = (CENTER_X + offset) as i32;
-        let color = if offset == 0.0 { Color::RGB(230, 200, 40) } else { Color::RGB(240, 240, 240) };
+        let color = if offset == 0.0 {
+            Color::RGB(230, 200, 40)
+        } else {
+            Color::RGB(240, 240, 240)
+        };
         canvas.set_draw_color(color);
         canvas.fill_rect(Rect::new(x, 0, 2, (CENTER_Y - CORRIDOR_HALF) as u32))?;
         canvas.fill_rect(Rect::new(
@@ -101,7 +119,11 @@ pub fn draw_lane_lines(canvas: &mut Canvas<Window>) -> Result<(), String> {
 
     for &offset in &offsets {
         let y = (CENTER_Y + offset) as i32;
-        let color = if offset == 0.0 { Color::RGB(230, 200, 40) } else { Color::RGB(240, 240, 240) };
+        let color = if offset == 0.0 {
+            Color::RGB(230, 200, 40)
+        } else {
+            Color::RGB(240, 240, 240)
+        };
         canvas.set_draw_color(color);
         canvas.fill_rect(Rect::new(0, y, (CENTER_X - CORRIDOR_HALF) as u32, 2))?;
         canvas.fill_rect(Rect::new(

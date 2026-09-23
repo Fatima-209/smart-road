@@ -49,6 +49,8 @@ pub struct Vehicle {
     /// Every velocity this vehicle has held during its crossing, so stats
     /// can be sampled from the full history instead of a single snapshot.
     pub velocity_history: Vec<f32>,
+    pub stats_recorded: bool,
+    pub turn_completed: bool,
 }
 
 impl Vehicle {
@@ -67,6 +69,8 @@ impl Vehicle {
             detected_at: None,
             cleared_at: None,
             velocity_history: Vec::new(),
+            stats_recorded: false,
+            turn_completed: route == Route::Straight,
         }
     }
 
@@ -75,17 +79,40 @@ impl Vehicle {
         self.velocity_history.push(velocity);
     }
 
-    /// Moves the vehicle forward by `velocity * dt` along its heading.
-    /// Straight-line only for now - turning routes will follow the actual
-    /// lane path once that's implemented; today they just drive straight
-    /// through whichever lane they spawned in.
+    /// Moves along the entry lane to the intersection turn point, rotates
+    /// the heading, then follows the corresponding exit lane.
     pub fn advance(&mut self, dt: f32) {
-        let step = self.velocity * dt;
-        let (dx, dy) = heading_vector(self.direction);
-        self.x += dx * step;
-        self.y += dy * step;
-        self.distance_traveled += step;
-        self.distance_remaining = (self.distance_remaining - step).max(0.0);
+        let mut remaining = self.velocity * dt;
+        while remaining > 0.0 {
+            let (dx, dy) = heading_vector(self.direction);
+            let turn_at = if !self.turn_completed {
+                Some(turn_point(self.direction, self.route))
+            } else {
+                None
+            };
+            if let Some((tx, ty)) = turn_at {
+                let to_turn = if dx != 0.0 {
+                    (tx - self.x) * dx
+                } else {
+                    (ty - self.y) * dy
+                };
+                if to_turn >= 0.0 && to_turn <= remaining {
+                    self.x += dx * to_turn;
+                    self.y += dy * to_turn;
+                    self.distance_traveled += to_turn;
+                    self.distance_remaining = (self.distance_remaining - to_turn).max(0.0);
+                    remaining -= to_turn;
+                    self.direction = turn_direction(self.direction, self.route);
+                    self.turn_completed = true;
+                    continue;
+                }
+            }
+            self.x += dx * remaining;
+            self.y += dy * remaining;
+            self.distance_traveled += remaining;
+            self.distance_remaining = (self.distance_remaining - remaining).max(0.0);
+            remaining = 0.0;
+        }
     }
 
     /// True once the vehicle has fully driven past the far edge of the
@@ -135,6 +162,31 @@ impl Vehicle {
     }
 }
 
+fn turn_direction(from: Direction, route: Route) -> Direction {
+    use Direction::*;
+    match (from, route) {
+        (North, Route::Left) => West,
+        (North, Route::Right) => East,
+        (South, Route::Left) => East,
+        (South, Route::Right) => West,
+        (East, Route::Left) => North,
+        (East, Route::Right) => South,
+        (West, Route::Left) => South,
+        (West, Route::Right) => North,
+        (d, Route::Straight) => d,
+    }
+}
+
+fn turn_point(direction: Direction, route: Route) -> (f32, f32) {
+    let out = turn_direction(direction, route);
+    let entry_lane = lane_center(direction, route);
+    let exit_lane = lane_center(out, route);
+    match direction {
+        Direction::North | Direction::South => (entry_lane, exit_lane),
+        Direction::East | Direction::West => (exit_lane, entry_lane),
+    }
+}
+
 /// The unit vector a vehicle moves along for its heading (screen space:
 /// y grows downward).
 pub fn heading_vector(direction: Direction) -> (f32, f32) {
@@ -144,21 +196,6 @@ pub fn heading_vector(direction: Direction) -> (f32, f32) {
         Direction::East => (1.0, 0.0),
         Direction::West => (-1.0, 0.0),
     }
-}
-
-/// True if two directions are perpendicular (one N/S, the other E/W) - the
-/// only pairs whose *straight* paths can physically cross. Parallel pairs
-/// (N/S together, or E/W together) never cross while driving straight, so
-/// they're not conflicts today. This will need revisiting once turning is
-/// implemented: a turning vehicle's real path can cross lanes its spawn
-/// direction alone wouldn't suggest.
-pub fn is_perpendicular(a: Direction, b: Direction) -> bool {
-    use Direction::*;
-    matches!(
-        (a, b),
-        (North, East) | (North, West) | (South, East) | (South, West)
-            | (East, North) | (East, South) | (West, North) | (West, South)
-    )
 }
 
 /// Degrees to rotate the sprite (clockwise) so it visually faces its
@@ -213,6 +250,44 @@ pub fn spawn_position(direction: Direction, route: Route) -> (f32, f32) {
         Direction::South => (lane, 0.0),
         Direction::East => (0.0, lane),
         Direction::West => (WINDOW_WIDTH as f32, lane),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turning_routes_change_heading_at_the_turn_point() {
+        use Direction::*;
+        let cases = [
+            (North, Route::Left, West),
+            (North, Route::Right, East),
+            (South, Route::Left, East),
+            (South, Route::Right, West),
+            (East, Route::Left, North),
+            (East, Route::Right, South),
+            (West, Route::Left, South),
+            (West, Route::Right, North),
+        ];
+        for (from, route, expected) in cases {
+            let mut vehicle = Vehicle::new(0, from, route);
+            vehicle.set_velocity(200.0);
+            for _ in 0..500 {
+                vehicle.advance(0.016);
+                if vehicle.turn_completed {
+                    break;
+                }
+            }
+            assert!(
+                vehicle.turn_completed,
+                "{from:?} {route:?} never reached its turn point"
+            );
+            assert_eq!(
+                vehicle.direction, expected,
+                "wrong turn for {from:?} {route:?}"
+            );
+        }
     }
 }
 

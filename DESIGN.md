@@ -115,6 +115,19 @@ possible later upgrade, not required for the base project.
 
 ## Intersection management strategy
 
+**Current code status (updated 2026-09-23):** Vehicles now turn at fixed
+waypoints and rotate their heading at the turn point. The manager uses a
+conservative single-vehicle intersection rule: approaching vehicles yield to
+an older vehicle that is approaching or already inside. This serializes
+crossings rather than scheduling individual conflict cells. `R` creates
+random vehicles while held; Escape opens a Windows statistics dialog.
+Crossing time starts within `REACTION_DISTANCE` and ends when the vehicle
+clears the intersection box. Close calls are counted once per pair of vehicle
+centers that pass within `CLOSE_CALL_THRESHOLD`.
+
+The implementation notes below describe the original straight-line version
+and are retained as design history; they do not describe the current code.
+
 Chosen: **decentralized velocity negotiation**. Each tick, every vehicle
 inspects the shared vehicle list (world state) and adjusts its own velocity
 tier based on the nearest relevant vehicle ahead of it or on a conflicting
@@ -173,6 +186,6 @@ that revision is a known, planned step and not a surprise.
 
 ## Vehicle struct shape
 
-See `src/vehicle.rs`. Fields: `id`, `direction` (heading), `route`,
-position (`x`, `y`), `velocity`, `state` (lifecycle), `distance_remaining`,
-`distance_traveled`, `detected_at`, `cleared_at`, `velocity_history`.
+See `src/vehicle.rs`. Fields include `id`, current `direction` (heading),
+fixed `route`, position (`x`, `y`), `velocity`, lifecycle `state`, turn
+completion state, crossing timestamps, and velocity history.

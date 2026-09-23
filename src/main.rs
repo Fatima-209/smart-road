@@ -1,5 +1,6 @@
 mod config;
 mod render;
+mod statistics;
 mod vehicle;
 mod world;
 
@@ -32,30 +33,65 @@ fn main() {
     let texture_creator = canvas.texture_creator();
     let assets = Assets::load(&texture_creator).expect("failed to load assets");
 
-    let mut event_pump = sdl_context.event_pump().expect("failed to create event pump");
+    let mut event_pump = sdl_context
+        .event_pump()
+        .expect("failed to create event pump");
     let mut last_frame = Instant::now();
+    let mut show_statistics = false;
 
     'running: loop {
         let now = Instant::now();
 
         for event in event_pump.poll_iter() {
             match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
+                Event::Quit { .. } => break 'running,
+                Event::KeyDown {
                     keycode: Some(Keycode::Escape),
                     ..
-                } => break 'running,
-                Event::KeyDown { keycode: Some(Keycode::Up), repeat: false, .. } => {
+                } => {
+                    show_statistics = true;
+                    break 'running;
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Up),
+                    repeat: false,
+                    ..
+                } => {
                     world.try_spawn(Direction::North, random_route(), now);
                 }
-                Event::KeyDown { keycode: Some(Keycode::Down), repeat: false, .. } => {
+                Event::KeyDown {
+                    keycode: Some(Keycode::Down),
+                    repeat: false,
+                    ..
+                } => {
                     world.try_spawn(Direction::South, random_route(), now);
                 }
-                Event::KeyDown { keycode: Some(Keycode::Right), repeat: false, .. } => {
+                Event::KeyDown {
+                    keycode: Some(Keycode::Right),
+                    repeat: false,
+                    ..
+                } => {
                     world.try_spawn(Direction::East, random_route(), now);
                 }
-                Event::KeyDown { keycode: Some(Keycode::Left), repeat: false, .. } => {
+                Event::KeyDown {
+                    keycode: Some(Keycode::Left),
+                    repeat: false,
+                    ..
+                } => {
                     world.try_spawn(Direction::West, random_route(), now);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::R),
+                    repeat: false,
+                    ..
+                } => {
+                    world.set_random_mode(true);
+                }
+                Event::KeyUp {
+                    keycode: Some(Keycode::R),
+                    ..
+                } => {
+                    world.set_random_mode(false);
                 }
                 _ => {}
             }
@@ -63,6 +99,7 @@ fn main() {
 
         let dt = now.duration_since(last_frame).as_secs_f32();
         last_frame = now;
+        world.random_tick(now);
         world.update(dt);
 
         render::draw_background(&mut canvas, &assets).expect("draw_background failed");
@@ -76,5 +113,9 @@ fn main() {
         canvas.present();
 
         std::thread::sleep(Duration::from_millis(1000 / 60));
+    }
+
+    if show_statistics {
+        statistics::show(&video_subsystem, &mut event_pump, &world);
     }
 }
