@@ -32,6 +32,13 @@ fn main() {
 
     let texture_creator = canvas.texture_creator();
     let assets = Assets::load(&texture_creator).expect("failed to load assets");
+    let background = match render::create_static_scene(&mut canvas, &texture_creator, &assets) {
+        Ok(background) => Some(background),
+        Err(error) => {
+            eprintln!("Could not cache the road scene; rendering it each frame: {error}");
+            None
+        }
+    };
 
     let mut event_pump = sdl_context
         .event_pump()
@@ -85,13 +92,7 @@ fn main() {
                     repeat: false,
                     ..
                 } => {
-                    world.set_random_mode(true);
-                }
-                Event::KeyUp {
-                    keycode: Some(Keycode::R),
-                    ..
-                } => {
-                    world.set_random_mode(false);
+                    world.toggle_random_mode(now);
                 }
                 _ => {}
             }
@@ -102,9 +103,16 @@ fn main() {
         world.random_tick(now);
         world.update(dt);
 
-        render::draw_background(&mut canvas, &assets).expect("draw_background failed");
-        render::draw_road(&mut canvas, &assets).expect("draw_road failed");
-        render::draw_lane_lines(&mut canvas).expect("draw_lane_lines failed");
+        if let Some(background) = &background {
+            canvas
+                .copy(background, None, None)
+                .expect("draw_static_scene failed");
+        } else {
+            render::draw_background(&mut canvas, &assets).expect("draw_background failed");
+            render::draw_road(&mut canvas, &assets).expect("draw_road failed");
+            render::draw_lane_lines(&mut canvas).expect("draw_lane_lines failed");
+            render::draw_route_markers(&mut canvas).expect("draw_route_markers failed");
+        }
         for vehicle in &world.vehicles {
             let angle = facing_angle_degrees(vehicle.direction);
             render::draw_car(&mut canvas, &assets.car_black, vehicle.x, vehicle.y, angle)

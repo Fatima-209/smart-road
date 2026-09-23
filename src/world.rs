@@ -15,6 +15,7 @@ pub struct World {
     random_mode: bool,
     completed: Vec<CompletedVehicle>,
     close_calls: HashSet<(u32, u32)>,
+    collisions: HashSet<(u32, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -34,11 +35,17 @@ impl World {
             random_mode: false,
             completed: Vec::new(),
             close_calls: HashSet::new(),
+            collisions: HashSet::new(),
         }
     }
 
-    pub fn set_random_mode(&mut self, enabled: bool) {
-        self.random_mode = enabled;
+    pub fn toggle_random_mode(&mut self, now: Instant) {
+        self.random_mode = !self.random_mode;
+        if self.random_mode {
+            self.last_random_spawn = now
+                .checked_sub(Duration::from_millis(RANDOM_SPAWN_INTERVAL_MS))
+                .unwrap_or(now);
+        }
     }
 
     pub fn random_tick(&mut self, now: Instant) {
@@ -52,6 +59,9 @@ impl World {
     }
     pub fn close_call_count(&self) -> usize {
         self.close_calls.len()
+    }
+    pub fn collision_count(&self) -> usize {
+        self.collisions.len()
     }
 
     /// Manual (arrow-key) spawn attempt. Returns true if a vehicle was
@@ -92,10 +102,6 @@ impl World {
         self.next_id += 1;
         self.vehicles.push(vehicle);
     }
-
-    /// Decides each vehicle's speed for this tick, applies it, then moves
-    /// everyone, records vehicles as they clear the box, and removes cars
-    /// only after they leave the visible road.
     pub fn update(&mut self, dt: f32) {
         for vehicle in &mut self.vehicles {
             if vehicle.detected_at.is_none()
@@ -153,8 +159,13 @@ impl World {
             for j in i + 1..self.vehicles.len() {
                 let a = &self.vehicles[i];
                 let b = &self.vehicles[j];
-                if distance(a.x, a.y, b.x, b.y) < crate::config::CLOSE_CALL_THRESHOLD {
-                    self.close_calls.insert((a.id.min(b.id), a.id.max(b.id)));
+                let pair = (a.id.min(b.id), a.id.max(b.id));
+                if vehicles_overlap(a, b) {
+                    self.collisions.insert(pair);
+                } else if distance(a.x, a.y, b.x, b.y) < crate::config::CLOSE_CALL_THRESHOLD
+                    && paths_can_conflict(a, b)
+                {
+                    self.close_calls.insert(pair);
                 }
             }
         }
@@ -162,12 +173,6 @@ impl World {
         self.vehicles.retain(|v| !v.has_left_window());
     }
 
-    /// How fast `vehicles[index]` should go this tick, based on every other
-    /// vehicle currently in the world. Two independent rules apply, and the
-    /// vehicle obeys whichever is more restrictive:
-    /// - don't run into the vehicle ahead of it in the same lane;
-    /// - only one vehicle at a time may approach/use the intersection box;
-    ///   fixed spawn-id priority avoids negotiation deadlocks.
     fn desired_velocity(&self, index: usize) -> f32 {
         let vehicle = &self.vehicles[index];
         let mut target = VELOCITY_FAST;
@@ -196,8 +201,6 @@ impl World {
         target
     }
 
-    /// The spawn point is only clear if no existing vehicle in the same
-    /// lane is still sitting within a safety distance of it.
     fn spawn_tile_clear(&self, direction: Direction, route: Route) -> bool {
         let (spawn_x, spawn_y) = spawn_position(direction, route);
         !self.vehicles.iter().any(|v| {
@@ -222,31 +225,46 @@ fn distance(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
     ((x1 - x2).powi(2) + (y1 - y2).powi(2)).sqrt()
 }
 
-/// How far `other` is ahead of `vehicle` along `vehicle`'s direction of
-/// travel. `None` if `other` isn't ahead (same lane, but behind or beside).
+fn paths_can_conflict(a: &Vehicle, b: &Vehicle) -> bool {
+    let same_lane = a.direction == b.direction && a.route == b.route;
+    let perpendicular = matches!(
+        (a.direction, b.direction),
+        (
+            Direction::North | Direction::South,
+            Direction::East | Direction::West
+        ) | (
+            Direction::East | Direction::West,
+            Direction::North | Direction::South
+        )
+    );
+    same_lane || perpendicular
+}
+
+fn vehicles_overlap(a: &Vehicle, b: &Vehicle) -> bool {
+    use crate::config::{CAR_HEIGHT, CAR_WIDTH};
+
+    let (a_half_x, a_half_y) = half_extents(a.direction, CAR_WIDTH, CAR_HEIGHT);
+    let (b_half_x, b_half_y) = half_extents(b.direction, CAR_WIDTH, CAR_HEIGHT);
+    (a.x - b.x).abs() < a_half_x + b_half_x && (a.y - b.y).abs() < a_half_y + b_half_y
+}
+
+fn half_extents(direction: Direction, width: f32, height: f32) -> (f32, f32) {
+    match direction {
+        Direction::North | Direction::South => (width / 2.0, height / 2.0),
+        Direction::East | Direction::West => (height / 2.0, width / 2.0),
+    }
+}
+
 fn following_gap(vehicle: &Vehicle, other: &Vehicle) -> Option<f32> {
     let (dx, dy) = heading_vector(vehicle.direction);
     let ahead = (other.x - vehicle.x) * dx + (other.y - vehicle.y) * dy;
     (ahead > 0.0).then_some(ahead)
 }
 
-/// True if `other` should go first in the single-vehicle intersection queue:
-/// already inside the box, or spawned earlier (lower id). Deliberately NOT based on
-/// live distance-to-box - that seems more "fair" (whoever's closer goes
-/// first) but breaks the moment one vehicle stops: its distance freezes
-/// while the other's keeps shrinking, so the two vehicles' priority checks
-/// can disagree with each other mid-negotiation (each thinks the other
-/// should go), and they swap who's yielding instead of one committing.
-/// Id is fixed at spawn time, so it can never flip-flop like that - exactly
-/// one of any two conflicting vehicles yields, consistently, for as long as
-/// the conflict lasts.
 fn other_has_priority(vehicle: &Vehicle, other: &Vehicle) -> bool {
     other.is_inside_box() || other.id < vehicle.id
 }
 
-/// Maps a gap (to a vehicle ahead, or to the intersection box) down to one
-/// of the 3 velocity tiers: full speed while there's room, slow down inside
-/// REACTION_DISTANCE, stop before closing to less than SAFETY_DISTANCE.
 fn speed_for_gap(gap: f32) -> f32 {
     if gap < SAFETY_DISTANCE {
         VELOCITY_STOPPED
@@ -283,6 +301,100 @@ mod tests {
             "both vehicles should clear the box"
         );
         assert_eq!(world.close_call_count(), 0);
+        assert_eq!(world.collision_count(), 0);
+    }
+
+    #[test]
+    fn close_calls_are_safety_violations_without_sprite_overlap() {
+        let mut world = World::new();
+        world.spawn(Direction::North, Route::Straight);
+        world.spawn(Direction::North, Route::Straight);
+        world.vehicles[1].x = world.vehicles[0].x;
+        world.vehicles[0].y = 500.0;
+        world.vehicles[1].y = 554.0;
+
+        world.update(0.0);
+        assert_eq!(world.close_call_count(), 1);
+        assert_eq!(world.collision_count(), 0);
+    }
+
+    #[test]
+    fn overlapping_vehicle_rectangles_are_counted_as_collisions() {
+        let mut world = World::new();
+        world.spawn(Direction::North, Route::Straight);
+        world.spawn(Direction::North, Route::Straight);
+        world.vehicles[0].y = 500.0;
+        world.vehicles[1].y = 549.0;
+
+        world.update(0.0);
+        assert_eq!(world.collision_count(), 1);
+        assert_eq!(world.close_call_count(), 0);
+    }
+
+    #[test]
+    fn random_interval_does_not_build_a_same_lane_queue() {
+        let mut world = World::new();
+        let start = Instant::now();
+        let mut max_lane_occupancy = 0;
+
+        for millis in (0..60_000).step_by(16) {
+            let now = start + Duration::from_millis(millis);
+            world.try_random_spawn(Direction::North, Route::Left, now);
+            world.update(0.016);
+            let lane_occupancy = world
+                .vehicles
+                .iter()
+                .filter(|vehicle| {
+                    vehicle.direction == Direction::North && vehicle.route == Route::Left
+                })
+                .count();
+            max_lane_occupancy = max_lane_occupancy.max(lane_occupancy);
+        }
+
+        assert!(max_lane_occupancy <= 2, "random spawns congested one lane");
+        assert_eq!(world.collision_count(), 0);
+    }
+
+    #[test]
+    fn manual_spawns_obey_cooldown_and_spawn_clearance() {
+        let mut world = World::new();
+        let start = Instant::now();
+        assert!(world.try_spawn(Direction::North, Route::Straight, start));
+        assert!(!world.try_spawn(Direction::North, Route::Right, start));
+        assert!(!world.try_spawn(
+            Direction::North,
+            Route::Straight,
+            start + Duration::from_millis(650)
+        ));
+
+        world.update(0.4);
+        assert!(world.try_spawn(
+            Direction::North,
+            Route::Straight,
+            start + Duration::from_millis(700)
+        ));
+        assert_eq!(world.vehicles.len(), 2);
+    }
+
+    #[test]
+    fn controller_uses_four_distinct_velocity_levels() {
+        assert_eq!(speed_for_gap(30.0), VELOCITY_STOPPED);
+        assert_eq!(speed_for_gap(100.0), VELOCITY_SLOW);
+        assert_eq!(speed_for_gap(200.0), VELOCITY_MEDIUM);
+        assert_eq!(speed_for_gap(400.0), VELOCITY_FAST);
+    }
+
+    #[test]
+    fn pressing_random_mode_starts_spawning_and_can_toggle_off() {
+        let mut world = World::new();
+        let start = Instant::now();
+        world.toggle_random_mode(start);
+        world.random_tick(start);
+        assert_eq!(world.vehicles.len(), 1, "R should spawn immediately");
+
+        world.toggle_random_mode(start + Duration::from_secs(1));
+        world.random_tick(start + Duration::from_secs(10));
+        assert_eq!(world.vehicles.len(), 1, "R should stop after toggling off");
     }
 
     #[test]
@@ -320,5 +432,6 @@ mod tests {
             "some lane or route became stuck"
         );
         assert_eq!(world.close_call_count(), 0);
+        assert_eq!(world.collision_count(), 0);
     }
 }

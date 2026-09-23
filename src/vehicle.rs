@@ -6,8 +6,7 @@ use crate::config::{
     CAR_HEIGHT, CENTER_X, CENTER_Y, CORRIDOR_WIDTH, LANE_WIDTH, WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 
-/// The direction a vehicle travels *toward* (its heading), matching the
-/// keyboard command that spawned it (Arrow Up -> heading North, etc).
+/// Current heading of a vehicle; arrow commands choose its spawn heading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     North,
@@ -40,14 +39,15 @@ pub struct Vehicle {
     pub y: f32,
     pub velocity: f32,
     pub state: VehicleState,
+    /// Total path length traveled from its spawn point.
     pub distance_traveled: f32,
+    /// Remaining route length until the vehicle center clears the box.
     pub distance_remaining: f32,
-    /// Set once, the first time the intersection algorithm evaluates this
-    /// vehicle (Stage 3). Crossing time is measured from here, not spawn.
+    /// Set on first entry into REACTION_DISTANCE; starts crossing-time stats.
     pub detected_at: Option<Instant>,
+    /// Set on clearing the far edge of the intersection box.
     pub cleared_at: Option<Instant>,
-    /// Every velocity this vehicle has held during its crossing, so stats
-    /// can be sampled from the full history instead of a single snapshot.
+    /// Speeds sampled from detection through clearance for crossing stats.
     pub velocity_history: Vec<f32>,
     pub stats_recorded: bool,
     pub turn_completed: bool,
@@ -65,7 +65,7 @@ impl Vehicle {
             velocity: 0.0,
             state: VehicleState::Approaching,
             distance_traveled: 0.0,
-            distance_remaining: total_travel_distance(direction),
+            distance_remaining: total_travel_distance(direction, route),
             detected_at: None,
             cleared_at: None,
             velocity_history: Vec::new(),
@@ -76,11 +76,12 @@ impl Vehicle {
 
     pub fn set_velocity(&mut self, velocity: f32) {
         self.velocity = velocity;
-        self.velocity_history.push(velocity);
+        if self.detected_at.is_some() {
+            self.velocity_history.push(velocity);
+        }
     }
 
-    /// Moves along the entry lane to the intersection turn point, rotates
-    /// the heading, then follows the corresponding exit lane.
+    /// Advances distance by velocity * dt, switching heading at a turn point.
     pub fn advance(&mut self, dt: f32) {
         let mut remaining = self.velocity * dt;
         while remaining > 0.0 {
@@ -115,8 +116,6 @@ impl Vehicle {
         }
     }
 
-    /// True once the vehicle has fully driven past the far edge of the
-    /// window (used to remove it from the world).
     pub fn has_left_window(&self) -> bool {
         match self.direction {
             Direction::North => self.y < -CAR_HEIGHT,
@@ -126,18 +125,11 @@ impl Vehicle {
         }
     }
 
-    /// True while any part of the vehicle's travel puts it within the
-    /// shared 300x300 intersection box (see DESIGN.md).
     pub fn is_inside_box(&self) -> bool {
         (CENTER_X - CORRIDOR_WIDTH..=CENTER_X + CORRIDOR_WIDTH).contains(&self.x)
             && (CENTER_Y - CORRIDOR_WIDTH..=CENTER_Y + CORRIDOR_WIDTH).contains(&self.y)
     }
 
-    /// How far the vehicle still has to travel before reaching the near
-    /// edge of the intersection box. 0 once it's inside OR already past -
-    /// callers that care about the difference must also check
-    /// `is_inside_box`/`has_passed_box`, since this alone can't tell "about
-    /// to arrive" apart from "long gone".
     pub fn distance_to_box(&self) -> f32 {
         match self.direction {
             Direction::North => (self.y - (CENTER_Y + CORRIDOR_WIDTH)).max(0.0),
@@ -147,11 +139,6 @@ impl Vehicle {
         }
     }
 
-    /// True once the vehicle has driven all the way past the far edge of
-    /// the box. Without this, a vehicle that's long gone still reads as
-    /// "distance to box = 0" from `distance_to_box`, which looks identical
-    /// to "about to arrive" and would make other traffic yield to it
-    /// forever.
     pub fn has_passed_box(&self) -> bool {
         match self.direction {
             Direction::North => self.y < CENTER_Y - CORRIDOR_WIDTH,
@@ -187,8 +174,6 @@ fn turn_point(direction: Direction, route: Route) -> (f32, f32) {
     }
 }
 
-/// The unit vector a vehicle moves along for its heading (screen space:
-/// y grows downward).
 pub fn heading_vector(direction: Direction) -> (f32, f32) {
     match direction {
         Direction::North => (0.0, -1.0),
@@ -198,12 +183,6 @@ pub fn heading_vector(direction: Direction) -> (f32, f32) {
     }
 }
 
-/// Degrees to rotate the sprite (clockwise) so it visually faces its
-/// direction of travel. The source art (car_black.png) is drawn facing
-/// up/North, so North needs no rotation. Recomputed from the vehicle's
-/// current direction every frame by the caller, not stored/hardcoded -
-/// once turning is implemented, `direction` itself will change mid-route
-/// and this will automatically follow it.
 pub fn facing_angle_degrees(direction: Direction) -> f64 {
     match direction {
         Direction::North => 0.0,
@@ -213,9 +192,6 @@ pub fn facing_angle_degrees(direction: Direction) -> f64 {
     }
 }
 
-/// Picks one of the 3 routes with equal probability. Spec requires spawns
-/// to pick a random route within the chosen direction, not just a random
-/// direction.
 pub fn random_route() -> Route {
     match rand::thread_rng().gen_range(0..3) {
         0 => Route::Left,
@@ -224,10 +200,6 @@ pub fn random_route() -> Route {
     }
 }
 
-/// The fixed centerline (the coordinate perpendicular to travel) for a
-/// given (direction, route) lane. See DESIGN.md for the derivation:
-/// right-hand traffic, left-turn lanes innermost (median-adjacent),
-/// right-turn lanes outermost (curb-adjacent).
 pub fn lane_center(direction: Direction, route: Route) -> f32 {
     let offset = match route {
         Route::Left => LANE_WIDTH * 0.5,
@@ -242,7 +214,6 @@ pub fn lane_center(direction: Direction, route: Route) -> f32 {
     }
 }
 
-/// Spawn point just outside the window edge, on the lane's centerline.
 pub fn spawn_position(direction: Direction, route: Route) -> (f32, f32) {
     let lane = lane_center(direction, route);
     match direction {
@@ -289,14 +260,57 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn remaining_distance_reaches_zero_when_each_route_clears_the_box() {
+        use Direction::*;
+        for direction in [North, South, East, West] {
+            for route in [Route::Left, Route::Straight, Route::Right] {
+                let mut vehicle = Vehicle::new(0, direction, route);
+                vehicle.set_velocity(200.0);
+                for _ in 0..1_000 {
+                    if vehicle.has_passed_box() {
+                        break;
+                    }
+                    vehicle.advance(0.016);
+                }
+                assert!(
+                    vehicle.has_passed_box(),
+                    "{direction:?} {route:?} did not clear"
+                );
+                assert_eq!(
+                    vehicle.distance_remaining, 0.0,
+                    "bad remaining distance for {direction:?} {route:?}"
+                );
+            }
+        }
+    }
 }
 
-/// Straight-line distance from a fresh spawn point to the far edge of the
-/// window along the direction of travel. Used as the initial
-/// `distance_remaining`; Stage 2 will refine this once turn paths exist.
-fn total_travel_distance(direction: Direction) -> f32 {
-    match direction {
-        Direction::North | Direction::South => WINDOW_HEIGHT as f32,
-        Direction::East | Direction::West => WINDOW_WIDTH as f32,
+fn total_travel_distance(direction: Direction, route: Route) -> f32 {
+    let (spawn_x, spawn_y) = spawn_position(direction, route);
+    if route == Route::Straight {
+        return match direction {
+            Direction::North => spawn_y - (CENTER_Y - CORRIDOR_WIDTH),
+            Direction::South => CENTER_Y + CORRIDOR_WIDTH - spawn_y,
+            Direction::East => CENTER_X + CORRIDOR_WIDTH - spawn_x,
+            Direction::West => spawn_x - (CENTER_X - CORRIDOR_WIDTH),
+        };
     }
+
+    let (turn_x, turn_y) = turn_point(direction, route);
+    let to_turn = match direction {
+        Direction::North => spawn_y - turn_y,
+        Direction::South => turn_y - spawn_y,
+        Direction::East => turn_x - spawn_x,
+        Direction::West => spawn_x - turn_x,
+    };
+    let outgoing = turn_direction(direction, route);
+    let from_turn_to_clear = match outgoing {
+        Direction::North => turn_y - (CENTER_Y - CORRIDOR_WIDTH),
+        Direction::South => CENTER_Y + CORRIDOR_WIDTH - turn_y,
+        Direction::East => CENTER_X + CORRIDOR_WIDTH - turn_x,
+        Direction::West => turn_x - (CENTER_X - CORRIDOR_WIDTH),
+    };
+    to_turn + from_turn_to_clear
 }

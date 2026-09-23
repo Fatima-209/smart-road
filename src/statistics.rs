@@ -139,9 +139,19 @@ fn draw_summary(canvas: &mut Canvas<Window>, world: &World) {
         Rect::new(32, 438, 576, 54),
         Color::RGB(255, 120, 110),
     );
-    draw_text(canvas, "CLOSE CALLS", 54, 458, 2, MUTED);
+    draw_text(canvas, "CLOSE CALLS", 54, 458, 1, MUTED);
     let calls = world.close_call_count().to_string();
-    draw_text(canvas, &calls, 566 - text_width(&calls, 3), 451, 3, TEXT);
+    draw_text(canvas, &calls, 216 - text_width(&calls, 2), 455, 2, TEXT);
+    draw_text(canvas, "COLLISIONS", 332, 458, 1, MUTED);
+    let collisions = world.collision_count().to_string();
+    draw_text(
+        canvas,
+        &collisions,
+        566 - text_width(&collisions, 2),
+        455,
+        2,
+        TEXT,
+    );
 
     fill(canvas, Rect::new(450, 510, 158, 44), ACCENT_DARK);
     draw_text(canvas, "CLOSE  [ESC]", 465, 524, 1, TEXT);

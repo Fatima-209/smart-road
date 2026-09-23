@@ -64,6 +64,20 @@ for the position update, only for the rendered rotation angle), while still
 satisfying the "vehicle visually rotates" requirement. A smooth arc is a
 possible later upgrade, not required for the base project.
 
+Each turning point is the intersection of the incoming lane centerline and
+the outgoing lane centerline. The route-to-exit mapping is fixed:
+
+| Incoming heading | Left | Straight | Right |
+|---|---|---|---|
+| North | West | North | East |
+| South | East | South | West |
+| East | North | East | South |
+| West | South | West | North |
+
+The 12 approach lanes carry small directional arrows matching that table.
+The static road, grass, and lane-marking scene is composed once into a target
+texture; each frame reuses it and redraws moving car sprites.
+
 ## Vehicle physics
 
 - At least 3 velocity tiers, **instantaneous** changes (meets the minimum
@@ -76,14 +90,10 @@ possible later upgrade, not required for the base project.
   - `FAST = 200.0` px/s
 - `distance`: remaining px until the vehicle fully clears the intersection
   box, tracked per vehicle.
-- `time`: elapsed time from **detection** (an explicit `detected_at`
-  timestamp set the first time the intersection algorithm evaluates the
-  vehicle — Stage 3) until the vehicle clears the intersection. Not the
-  same as spawn time, even though today they happen to coincide until
-  Stage 3 wires up real detection.
-- `velocity_history`: every velocity the vehicle has held during its
-  crossing is recorded, so min/max stats are sampled from the full history,
-  not just spawn/completion values.
+- `time`: elapsed wall-clock time from `detected_at` (when the vehicle enters
+  `REACTION_DISTANCE`) until its center clears the intersection box.
+- `velocity_history`: every speed selected after detection until the vehicle
+  clears the box is recorded, including any stops while it waits.
 
 ## Safety distance & close calls
 
@@ -93,23 +103,20 @@ possible later upgrade, not required for the base project.
   (`CAR_HEIGHT = 50`) — a smaller safety distance would let two vehicles
   pass the "safe" check (center-to-center) while their sprites still
   visually overlap on screen.
-- `CLOSE_CALL_THRESHOLD = 25.0` px — smaller than `SAFETY_DISTANCE`, so a
-  close call (gap < threshold, but no actual collision) is a real,
-  reachable condition rather than an impossible one.
+- `CLOSE_CALL_THRESHOLD = 55.0` px, below the 60px safety distance. A close
+  call is counted when potentially conflicting vehicle centers come within
+  55px without their rendered rectangles overlapping. Overlaps are collisions.
 
 ## Spawn cooldowns
 
 - `SPAWN_COOLDOWN_MS = 650` — minimum time between two manual (arrow-key)
   spawns **in the same direction**, so holding/spamming a key can't stack
   vehicles on top of each other. Tracked per-direction, not globally, so
-  spamming Up doesn't block Down. Chosen so that at `VELOCITY_MEDIUM`
-  (120 px/s), the previous vehicle has already moved more than
-  `SAFETY_DISTANCE` away from the spawn point by the time the cooldown
-  clears (650ms x 120px/s = 78px > 60px), so a fresh spawn can never land
-  on top of it even in the worst case.
-- `RANDOM_SPAWN_INTERVAL_MS = 800` — separate interval for the R-key's
-  continuous random generation, on its own timer independent of the manual
-  cooldowns above.
+  spamming Up doesn't block Down. The spawn-tile check remains the final
+  guard if traffic has stopped the previous vehicle near the spawn point.
+- `RANDOM_SPAWN_INTERVAL_MS = 4000` — separate interval for the R-key's
+  continuous random generation, set below the one-at-a-time intersection's
+  approximate crossing throughput to limit queue growth.
 - A spawn attempt is **dropped** (not queued) if the cooldown hasn't
   elapsed, or if the spawn point in the chosen lane isn't clear.
 
@@ -119,11 +126,23 @@ possible later upgrade, not required for the base project.
 waypoints and rotate their heading at the turn point. The manager uses a
 conservative single-vehicle intersection rule: approaching vehicles yield to
 an older vehicle that is approaching or already inside. This serializes
-crossings rather than scheduling individual conflict cells. `R` creates
-random vehicles while held; Escape opens a Windows statistics dialog.
+crossings rather than scheduling individual conflict cells. `R` toggles
+random vehicle generation; Escape opens an SDL statistics window.
 Crossing time starts within `REACTION_DISTANCE` and ends when the vehicle
 clears the intersection box. Close calls are counted once per pair of vehicle
-centers that pass within `CLOSE_CALL_THRESHOLD`.
+centers on potentially conflicting paths that pass within
+`CLOSE_CALL_THRESHOLD` without overlapping. Collisions are tracked separately.
+Only vehicles already cleared when Escape is pressed count in the passed total;
+vehicles still on the road are excluded.
+
+The manager is centralized in `World`. Its effective conflict matrix is
+deliberately conservative: let the 12 lanes be `{N-L, N-S, N-R, S-L, S-S,
+S-R, E-L, E-S, E-R, W-L, W-S, W-R}`. For each lane, its conflict set is all
+other 11 lanes, so all 66 distinct lane pairs are serialized. The strategy
+allows zero non-conflicting pairs to occupy the box together, even where the
+physical paths would not cross. Same-lane followers also use the following
+distance check. This complete matrix is fixed by policy and not inferred from
+current positions or chosen routes at runtime.
 
 The implementation notes below describe the original straight-line version
 and are retained as design history; they do not describe the current code.
