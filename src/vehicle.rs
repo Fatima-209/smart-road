@@ -149,7 +149,7 @@ impl Vehicle {
     }
 }
 
-fn turn_direction(from: Direction, route: Route) -> Direction {
+pub fn turn_direction(from: Direction, route: Route) -> Direction {
     use Direction::*;
     match (from, route) {
         (North, Route::Left) => West,
@@ -164,7 +164,7 @@ fn turn_direction(from: Direction, route: Route) -> Direction {
     }
 }
 
-fn turn_point(direction: Direction, route: Route) -> (f32, f32) {
+pub fn turn_point(direction: Direction, route: Route) -> (f32, f32) {
     let out = turn_direction(direction, route);
     let entry_lane = lane_center(direction, route);
     let exit_lane = lane_center(out, route);

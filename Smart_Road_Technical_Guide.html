@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Road Technical Guide</title>
+<style>
+body{margin:0;background:#edf1f5;color:#172536;font:17px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+main{max-width:900px;margin:24px auto;background:white;padding:56px 68px;box-shadow:0 4px 24px #17253622}
+h1{font-size:36px;line-height:1.15;color:#102d4c;margin:0 0 8px}
+h2{font-size:25px;line-height:1.25;color:#143f70;margin:38px 0 10px;border-bottom:2px solid #cbd6e2;padding-bottom:7px}
+h3{font-size:19px;color:#174f83;margin:24px 0 6px}
+p{margin:9px 0 13px}li{margin:5px 0}table{border-collapse:collapse;width:100%;margin:14px 0 20px;font-size:15px}
+th,td{border:1px solid #cbd6e2;padding:9px 11px;text-align:left;vertical-align:top}th{background:#edf4fb;color:#143f70}
+code{font-family:Consolas,monospace;background:#eef2f6;padding:1px 5px;border-radius:4px;color:#183c5e}
+.subtitle{font-size:20px;color:#4b6074;margin:0 0 24px}.box{background:#eaf2fb;border-left:5px solid #1558a6;padding:14px 18px;margin:18px 0 22px}
+@media print{body{background:white;font-size:11pt}main{margin:0;max-width:none;padding:0;box-shadow:none}h2,h3{page-break-after:avoid}table,.box{page-break-inside:avoid}}
+@media(max-width:700px){main{margin:0;padding:28px 22px}h1{font-size:30px}body{font-size:16px}table{font-size:13px}td,th{padding:7px}}
+</style></head><body><main>
+<h1>Smart Road Technical Guide</h1>
+<p class="subtitle">A clear guide to the project logic, SDL2, animation and autonomous-vehicle ideas</p>
+<div class="box"><b>Purpose:</b> Use this to learn how the current code works and explain it clearly to a technical mentor. It describes the Rust source in <code>src/</code> and project assets in <code>assets/</code>.</div>
+<p><b>In one sentence:</b> Smart Road is a 2D Rust traffic simulation where vehicles arrive from four directions, follow one of three routes, adjust speed to keep space and yield near an intersection, and are animated by SDL2.</p>
+<h2>1. The idea behind the project</h2>
+<p>The project represents a four-way road intersection where vehicles may arrive from different directions. If two vehicles enter the shared area at once on crossing paths, they might collide. Smart Road gives each simulated vehicle a direction, a lane and a route, then applies rules to control its speed and movement.</p>
+<p>The central algorithm is a repeated feedback loop: <b>look at the current traffic state → decide a safe speed → update positions → repeat.</b> This resembles the structure of a controller used in autonomous systems, but the project is a deliberately simplified simulation.</p>
+<div class="box"><b>Accurate description:</b> “This is a rule-based traffic simulation inspired by autonomous vehicles. It does not use real sensors, cameras, lidar, machine learning or vehicle hardware.”</div>
+<h2>2. What is an autonomous vehicle?</h2>
+<p>An autonomous vehicle performs some or all driving tasks without a person continuously steering, accelerating and braking. A real automated driving system commonly has three broad stages:</p>
+<ol><li><b>Perception:</b> sensors gather information about lanes, vehicles, signs, pedestrians and obstacles.</li><li><b>Planning:</b> software chooses a route and predicts what other road users may do.</li><li><b>Control:</b> software turns the plan into steering, acceleration and braking commands.</li></ol>
+<p>In this simulation, perception is replaced by direct access to the world data: the code already knows every car's exact position, direction and route. Choosing a route and deciding who yields are planning-like jobs. Choosing speed and moving a car are control-like jobs. This makes it useful for learning the logic, but very different from a real self-driving car.</p>
+<table><tr><th>Real system</th><th>Project equivalent</th><th>Difference</th></tr><tr><td>Detect another car</td><td>Read another item in <code>World.vehicles</code></td><td>No sensor errors or uncertainty.</td></tr><tr><td>Plan a path</td><td>Left, Straight or Right route</td><td>Fixed, simplified path.</td></tr><tr><td>Control speed</td><td>0, 60, 120 or 200 pixels/second</td><td>Instant changes, no real braking dynamics.</td></tr><tr><td>Coordinate intersection entry</td><td>Yield based on occupancy and vehicle ID</td><td>No signals, radio coordination or safety certification.</td></tr></table>
+<h2>3. SDL2 (not SDL 1.2)</h2>
+<p>SDL means Simple DirectMedia Layer. SDL2 is a cross-platform library that helps a program create a window, receive keyboard and window events, draw textures and show frames. SDL2 provides the display and input plumbing; it does not decide which vehicle should stop.</p>
+<p><code>Cargo.toml</code> declares the Rust SDL2 wrapper as <code>sdl2 = "0.38"</code>. That is the wrapper crate version. The project has SDL2 runtime/linking files in <code>deps/SDL2</code>. If “SDL12” means SDL 1.2, that is the older major release and is not what this project declares.</p>
+<p>In <code>main.rs</code>, SDL2 is initialized, a 1000×1000 window and drawing canvas are created, and an event pump listens for key presses. The renderer draws the current frame. Calling <code>present()</code> displays that frame.</p>
+<h2>4. Directions, lanes and routes</h2>
+<p>The simulation uses pixel coordinates. The top-left corner is (0,0), x grows to the right, y grows down, and the intersection center is (500,500). There are three approach lanes in each of four directions: 12 lanes total.</p>
+<table><tr><th>Key</th><th>Enters from</th><th>Initial travel</th></tr><tr><td>Up</td><td>South edge of screen</td><td>North/up</td></tr><tr><td>Down</td><td>North edge</td><td>South/down</td></tr><tr><td>Right</td><td>West edge</td><td>East/right</td></tr><tr><td>Left</td><td>East edge</td><td>West/left</td></tr></table>
+<p>Each manual key spawn chooses a route at random using <code>random_route()</code>. The lane is linked to the route: the innermost lane is Left, the middle lane is Straight and the outermost lane is Right. For example, an Up-key car with a Left route starts at the bottom of the screen, travels North and then turns West.</p>
+<table><tr><th>Approach</th><th>Left turn goes</th><th>Straight goes</th><th>Right turn goes</th></tr><tr><td>North</td><td>West</td><td>North</td><td>East</td></tr><tr><td>South</td><td>East</td><td>South</td><td>West</td></tr><tr><td>East</td><td>North</td><td>East</td><td>South</td></tr><tr><td>West</td><td>South</td><td>West</td><td>North</td></tr></table>
+<h2>5. Traffic algorithm, step by step</h2>
+<h3>Step 1: Create a vehicle</h3><p>A non-repeated arrow key event calls <code>World::try_spawn()</code> with a direction and random route. The attempt is rejected if less than 650 ms have passed since the last accepted spawn in that direction, or if another vehicle is within 60 pixels of that spawn tile. Rejected attempts are dropped rather than queued.</p>
+<p>Pressing R toggles random mode. A random attempt independently picks one of four directions and one of three routes. Successful random spawns are separated by at least four seconds and also need a clear spawn tile.</p>
+<h3>Step 2: Select a speed</h3><p>During each simulation update, <code>World::desired_velocity()</code> begins by assuming the vehicle can travel at 200 px/s. It compares that vehicle with the others and applies relevant rules. The lowest, most restrictive speed recommendation wins.</p>
+<p><b>Following distance:</b> if another car is ahead in the same direction and route lane, the code calculates the forward gap. It uses the car's heading to determine whether another vehicle is ahead and how far away it is.</p>
+<table><tr><th>Gap</th><th>Chosen speed</th><th>Meaning</th></tr><tr><td>Less than 60 px</td><td>0 px/s</td><td>Stop</td></tr><tr><td>60 to under 150 px</td><td>60 px/s</td><td>Slow</td></tr><tr><td>150 to under 300 px</td><td>120 px/s</td><td>Medium</td></tr><tr><td>300 px or more</td><td>200 px/s</td><td>Fast</td></tr></table>
+<p><b>Yielding at the intersection:</b> within 150 pixels of the intersection, a car that has not entered checks whether another car that has not passed is also approaching or inside. The other car has priority if it is already in the box or has a lower ID (it was spawned earlier). The approaching car slows or stops based on distance to the box.</p>
+<p>This creates a conservative policy intended to allow only one vehicle in the intersection box at a time. It is simple to reason about, but may make vehicles wait when their actual paths would not cross. It favors simplicity over maximum throughput.</p>
+<h3>Step 3: Move, turn and finish</h3><p>The position update uses <code>distance = velocity × dt</code>, where <code>dt</code> is elapsed time since the previous frame, measured in seconds. A straight car keeps its direction. A turning car travels to a fixed waypoint, changes heading at that point, and continues straight along the exit lane. Its route does not change.</p>
+<p>When the vehicle's center clears the far edge of the box, the program marks it cleared and records its statistics. Once it travels beyond the screen, it is removed from the active vehicle list.</p>
+<h2>6. How the animation works</h2>
+<p>The application uses a game-style loop, running about 60 times per second. Each frame: poll SDL2 events; calculate elapsed time (<code>dt</code>); attempt a random spawn if active; update traffic rules and positions; draw the road background; draw the cars; and present the frame.</p>
+<p>Displaying many still images quickly creates the impression of motion. Because position changes by speed times elapsed time, movement depends on time rather than on a fixed number of pixels per frame. The main loop sleeps about 16 ms per iteration to target roughly 60 frames per second.</p>
+<p>The static grass and road scene is drawn once into a texture by <code>create_static_scene()</code>; later frames reuse it. Cars are drawn again every frame because they move. The renderer currently loads <code>assets/car_black.png</code>. Other car art exists in <code>assets/cars/</code>, but the active asset loader does not select those files.</p>
+<p>Turning is a heading change at a waypoint, not a smooth arc. The car's drawn angle changes to match its new direction. Speed changes immediately between fixed levels; there is no gradual acceleration or braking model.</p>
+<h2>7. Other technical concepts</h2><ul><li><b>Discrete-time simulation:</b> the world state is updated in small time steps.</li><li><b>Rule-based control:</b> explicit if/then logic selects speeds and priority.</li><li><b>Random sampling:</b> random numbers choose spawn direction and route.</li><li><b>Cooldown/debounce:</b> a timer stops repeated key presses from making vehicles too quickly.</li><li><b>Collision detection:</b> car rectangles are approximated using their direction to determine whether they overlap.</li><li><b>Statistics:</b> completed vehicles contribute times and observed minimum/maximum speeds; pairs of close calls and collisions are counted once.</li><li><b>Pairwise processing:</b> many decisions compare cars with other cars. With N cars this can mean about N² comparisons, fine for a small simulation but not unlimited traffic.</li></ul>
+<h2>8. Understanding the statistics</h2><p>The Escape summary shows vehicles passed, max/min velocity, max/min crossing time, close calls and collisions. Vehicles that have not cleared the intersection when Escape is pressed are not included in the passed total.</p>
+<p>Timing begins when the car reaches the 150 px reaction distance and stops when its center clears the box. It is therefore best described as <b>detection-to-clearance time</b>, not the time spent physically inside the intersection. Max and min may be equal if only one vehicle completed or the displayed values round to the same number.</p>
+<h2>9. What the existing tests show</h2><p>The project has 10 Rust unit tests; the run completed with 10 passed and 0 failed. They exercise turning and route distances, speed tiers, manual cooldown and spawn clearance, R toggling, a scripted random-arrival case, one-at-a-time intersection use, all 12 lanes clearing in a scripted run without overlap/deadlock, and close-call/collision counts.</p>
+<div class="box"><b>Do not overclaim:</b> passing tests validates the scenarios those tests exercise. It does not prove every possible traffic sequence is safe, that the graphics look the same on all computers, or that the algorithm is ready for real roads. Tests and a live demonstration check different things.</div>
+<h2>10. Limitations and real-life suitability</h2><ul><li>This is an educational 2D model, not vehicle software.</li><li>It has perfect knowledge of positions, with no sensor noise, communication delay or lost messages.</li><li>It does not include pedestrians, bicycles, emergency vehicles, signals, weather or road friction.</li><li>It has no acceleration, braking distance or realistic vehicle dynamics.</li><li>Its spawn-order priority and one-car rule are simple, not an optimized intersection scheduler.</li><li>Collision geometry and the fixed 60 px safety distance simplify real shape and stopping-distance concerns.</li><li>The close-call helper classifies same-lane and perpendicular approaches; it does not calculate every curved path's exact geometric intersection.</li></ul>
+<p><b>Could this algorithm be used in real life?</b> The broad pattern—detect traffic, predict conflicts, choose a safe speed and coordinate entry—is useful and implementable in principle. This specific program is not road-ready. Real deployment would require reliable sensors, uncertainty handling, physical dynamics, pedestrian protection, fail-safe behavior and extensive validation.</p>
+<h2>11. A short presentation script</h2><div class="box">“My project is a small traffic simulation written in Rust with SDL2 for the window, input and graphics. It has four approaches and three lanes per approach. Pressing an arrow key spawns a car from that side and randomly assigns Left, Straight or Right. Each update, the controller checks the gap to a car ahead and whether another vehicle has priority near the intersection. It chooses the most restrictive speed from stopped, slow, medium or fast, then updates position by speed times frame time. Turning cars reach a waypoint and change heading. SDL2 redraws cars over a cached road scene at about 60 frames per second. The project demonstrates rule-based coordination, but it is not a real autonomous-driving system because it has perfect simulated state and does not model sensors or real braking.”</div>
+<h2>12. Common mentor questions</h2>
+<h3>Why multiply speed by delta time?</h3><p>Speed is distance per second. Multiplying by elapsed seconds gives the distance for this update and reduces dependence on the exact frame rate.</p>
+<h3>Why does a vehicle stop?</h3><p>It is assigned zero speed if the same-lane gap is below 60 pixels or if it must wait for a higher-priority vehicle.</p>
+<h3>Why use vehicle IDs for priority?</h3><p>IDs increase with each spawn, so the older vehicle keeps priority. This avoids priority flipping as positions change. It is simple, though not always the fairest or most efficient policy.</p>
+<h3>Does R choose just a route?</h3><p>No. Random mode chooses both direction and route. Manual arrows choose direction but still randomize route.</p>
+<h3>Is this AI or machine learning?</h3><p>No. It uses explicit rules. Random vehicle generation is not machine learning.</p>
+<h3>Does it accelerate?</h3><p>No gradual acceleration. Target speeds jump among 0, 60, 120 and 200 px/s. Gradual acceleration would need an acceleration value and incremental velocity updates.</p>
+<h3>What would you improve?</h3><p>Add gradual acceleration and braking, smoother turns, more scenario tests, and geometric conflict-zone scheduling that allows safe non-conflicting traffic while protecting pedestrians.</p>
+<h2>13. Code map</h2><table><tr><th>File</th><th>What it does</th></tr><tr><td><code>src/main.rs</code></td><td>Initializes SDL2, handles keys, runs the frame loop, draws vehicles and opens statistics on Escape.</td></tr><tr><td><code>src/world.rs</code></td><td>Stores traffic state, spawns vehicles, applies speed/yield rules, records results and counts collisions/close calls.</td></tr><tr><td><code>src/vehicle.rs</code></td><td>Defines vehicle directions/routes/state and calculates lanes, waypoints, headings and movement.</td></tr><tr><td><code>src/render.rs</code></td><td>Loads textures, builds cached road scene and draws road markings, arrows and cars.</td></tr><tr><td><code>src/statistics.rs</code></td><td>Displays the summary after Escape.</td></tr><tr><td><code>src/config.rs</code></td><td>Contains shared dimensions, speed levels and safety constants.</td></tr><tr><td><code>assets/</code></td><td>Road, grass and vehicle image files.</td></tr><tr><td><code>Cargo.toml</code></td><td>Rust package and SDL2, random-number and image dependencies.</td></tr></table>
+<h2>14. Terms to remember</h2><table><tr><th>Term</th><th>Plain explanation</th></tr><tr><td>State</td><td>Current data about cars, such as position, speed and route.</td></tr><tr><td>Controller</td><td>Logic choosing an action from the current state.</td></tr><tr><td>Delta time (dt)</td><td>Elapsed seconds between updates.</td></tr><tr><td>Waypoint</td><td>Position where a vehicle changes from incoming to outgoing path.</td></tr><tr><td>Cooldown</td><td>Minimum interval between repeated actions.</td></tr><tr><td>Texture</td><td>An image loaded for drawing in the window.</td></tr><tr><td>Frame</td><td>One image produced during the repeated update-and-draw loop.</td></tr><tr><td>Deterministic rule</td><td>A rule that gives the same decision for the same input state.</td></tr></table>
+<p><b>Demo tip:</b> Show one car from each approach, demonstrate R random mode, then press Escape to show the summary window.</p>
+
+<h2>15. How the main source files work</h2>
+<p>Think of the program as four parts working together: <code>main.rs</code> runs the application loop; <code>world.rs</code> makes traffic decisions; <code>vehicle.rs</code> defines an individual car's route and movement; and <code>statistics.rs</code> summarizes cars that finished.</p>
+<h3><code>main.rs</code> — application setup and frame loop</h3>
+<p>This is the program's entry point. It creates the traffic <code>World</code>, initializes SDL2, opens the window, loads drawing assets and creates an event pump. The event pump reports keyboard actions. Up/Down/Right/Left request a vehicle from the corresponding approach; R toggles random spawns; Escape stops the simulation loop and opens the summary.</p>
+<p>After handling input, each iteration calculates <code>dt</code>, asks the world to spawn randomly if needed, updates the world, draws the background and cars, then presents the frame. In simplified form:</p>
+<pre>initialize SDL2, window, assets, World
+while application is running:
+    read keyboard/window events
+    dt = time_now - previous_frame_time
+    world.random_tick(time_now)
+    world.update(dt)
+    draw road and each vehicle
+    present frame
+if Escape ended the loop:
+    show statistics</pre>
+<p>This file coordinates the program. It delegates traffic behavior to <code>World</code> and drawing work to <code>render</code>; it does not contain the detailed yielding rules.</p>
+<h3><code>world.rs</code> — shared traffic state and traffic rules</h3>
+<p><code>World</code> owns the active vehicles, next vehicle ID, spawn timers, random-mode flag, completed-vehicle records, and sets of collision and close-call pairs. It is the traffic manager.</p>
+<ul><li><code>try_spawn()</code> checks the manual cooldown and whether the spawn tile is clear before creating a car.</li><li><code>toggle_random_mode()</code> switches R-mode on or off; <code>random_tick()</code> tries a random direction and route while it is on.</li><li><code>update(dt)</code> marks vehicles entering the reaction range, calculates requested velocities, advances vehicles, notices intersection clearance, records completed statistics, counts close calls/collisions, and removes cars that leave the screen.</li><li><code>desired_velocity()</code> checks a vehicle against the others. Same-lane following and intersection yielding can lower its speed; the most restrictive result is applied.</li></ul>
+<p>The key decision idea can be summarized as:</p>
+<pre>for each vehicle:
+    target_speed = FAST
+    for each other vehicle:
+        if other is ahead in the same lane:
+            target_speed = min(target_speed, speed_for_following_gap)
+        if other has intersection priority:
+            target_speed = min(target_speed, speed_for_distance_to_box)
+    apply target_speed</pre>
+<p>This is “decentralized” in the sense that a speed is worked out for each vehicle from the shared world state, rather than using traffic lights or a separate intersection reservation table. The checks compare vehicles pairwise, so the work grows roughly with the square of the number of vehicles.</p>
+<h3><code>vehicle.rs</code> — one vehicle's data and movement</h3>
+<p>This file defines the direction values (North, South, East, West), route values (Left, Straight, Right), vehicle state, and the <code>Vehicle</code> data structure. A vehicle stores an ID, current heading, fixed route, x/y position, current velocity, remaining travel distance, turn status and timing/speed history used for statistics.</p>
+<p><code>lane_center()</code> finds the correct lane coordinate for a direction and route. <code>spawn_position()</code> puts the car at the appropriate screen edge. <code>advance(dt)</code> moves it by velocity times time; if it reaches its turn waypoint, it updates the heading and continues on the exit leg. Other helpers calculate whether it is in or past the intersection and whether it has left the screen.</p>
+<pre>distance_to_move = velocity * dt
+while distance_to_move remains:
+    if turning car reaches its waypoint:
+        move to waypoint
+        change heading to outgoing direction
+    else:
+        move along current heading</pre>
+<p>The turn route belongs to the vehicle and stays fixed; only the current heading changes at the waypoint. This is why it can turn and still leave along its assigned exit direction.</p>
+<h3><code>statistics.rs</code> — end-of-run summary</h3>
+<p>When Escape is pressed, <code>main.rs</code> calls <code>statistics::show()</code> with the SDL video subsystem, event pump and world. That function creates a separate window, draws a static summary, then waits for Escape, Enter, window close or the close button to dismiss it.</p>
+<p><code>draw_summary()</code> reads <code>world.completed()</code> to calculate the passed count and min/max speeds and times. It reads the world's close-call and collision counts separately. If there are no completed records, a metric is shown as N/A. Vehicles still approaching or crossing when Escape was pressed are not yet in the completed records.</p>
+<p>In broad terms:</p>
+<pre>records = completed vehicles
+passed_count = number of records
+max_speed = largest recorded max speed
+min_speed = smallest recorded min speed
+max_time = longest recorded elapsed time
+min_time = shortest recorded elapsed time
+display passed_count, speeds, times, close calls, collisions</pre>
+<h3>How the four files connect</h3>
+<table><tr><th>Question</th><th>Responsible part</th></tr>
+<tr><td>What key did the user press? When should a frame run?</td><td><code>main.rs</code> + SDL2 event pump</td></tr>
+<tr><td>Can a car spawn, and what speed should it use?</td><td><code>world.rs</code></td></tr>
+<tr><td>Where is this car's lane, and how does it move/turn?</td><td><code>vehicle.rs</code></td></tr>
+<tr><td>What results should be shown after Escape?</td><td><code>statistics.rs</code></td></tr>
+<tr><td>What does the road and car look like?</td><td><code>render.rs</code> plus image assets</td></tr></table>
+<p><b>Good explanation to say aloud:</b> “The main file handles SDL2 input and the frame loop. It asks the World to update traffic. World checks nearby vehicles and chooses safe speeds. Each Vehicle knows its route and updates its own position and turn. When Escape is pressed, the statistics module reads completed records and displays the results.”</p>
+</main></body></html>

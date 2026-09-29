@@ -192,6 +192,7 @@ impl World {
                 && vehicle.distance_to_box() < REACTION_DISTANCE
                 && !other.has_passed_box()
                 && (other.is_inside_box() || other.distance_to_box() < REACTION_DISTANCE)
+                && paths_can_conflict(vehicle, other)
                 && other_has_priority(vehicle, other)
             {
                 target = target.min(speed_for_gap(vehicle.distance_to_box()));
@@ -226,18 +227,72 @@ fn distance(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
 }
 
 fn paths_can_conflict(a: &Vehicle, b: &Vehicle) -> bool {
-    let same_lane = a.direction == b.direction && a.route == b.route;
-    let perpendicular = matches!(
-        (a.direction, b.direction),
-        (
-            Direction::North | Direction::South,
-            Direction::East | Direction::West
-        ) | (
-            Direction::East | Direction::West,
-            Direction::North | Direction::South
-        )
-    );
-    same_lane || perpendicular
+    // Compare the actual lane paths through the box. Parallel paths and
+    // movements that merely share an approach may proceed together; only
+    // paths whose swept car rectangles intersect need to yield.
+    let a_points = route_points(a);
+    let b_points = route_points(b);
+    for a_segment in a_points.windows(2) {
+        for b_segment in b_points.windows(2) {
+            if segments_near(a_segment[0], a_segment[1], b_segment[0], b_segment[1], 40.0) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn route_points(v: &Vehicle) -> Vec<(f32, f32)> {
+    use crate::config::{CENTER_X, CENTER_Y, CORRIDOR_WIDTH};
+    use crate::vehicle::{lane_center, turn_direction, turn_point};
+
+    // Model only the part of each movement that occupies the intersection.
+    // This avoids treating distant approach lanes as competing conflict zones.
+    let entry_lane = lane_center(v.direction, v.route);
+    let entry = match v.direction {
+        Direction::North => (entry_lane, CENTER_Y + CORRIDOR_WIDTH),
+        Direction::South => (entry_lane, CENTER_Y - CORRIDOR_WIDTH),
+        Direction::East => (CENTER_X - CORRIDOR_WIDTH, entry_lane),
+        Direction::West => (CENTER_X + CORRIDOR_WIDTH, entry_lane),
+    };
+    let outgoing = turn_direction(v.direction, v.route);
+    let exit_lane = lane_center(outgoing, v.route);
+    let exit = match outgoing {
+        Direction::North => (exit_lane, CENTER_Y - CORRIDOR_WIDTH),
+        Direction::South => (exit_lane, CENTER_Y + CORRIDOR_WIDTH),
+        Direction::East => (CENTER_X + CORRIDOR_WIDTH, exit_lane),
+        Direction::West => (CENTER_X - CORRIDOR_WIDTH, exit_lane),
+    };
+
+    if v.route == Route::Straight {
+        vec![entry, exit]
+    } else {
+        vec![entry, turn_point(v.direction, v.route), exit]
+    }
+}
+
+fn segments_near(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32), gap: f32) -> bool {
+    // Axis-aligned route segments; their center lines conflict when they
+    // cross within the intersection or run closer than a car width.
+    let ah = (a.1 - b.1).abs() < 1.0;
+    let ch = (c.1 - d.1).abs() < 1.0;
+    if ah && !ch {
+        let (amin, amax) = (a.0.min(b.0), a.0.max(b.0));
+        let (cmin, cmax) = (c.1.min(d.1), c.1.max(d.1));
+        return c.0 >= amin - gap && c.0 <= amax + gap && a.1 >= cmin - gap && a.1 <= cmax + gap;
+    }
+    if !ah && ch {
+        return segments_near(c, d, a, b, gap);
+    }
+    if ah {
+        (a.1 - c.1).abs() < gap
+            && a.0.min(b.0) < c.0.max(d.0) + gap
+            && c.0.min(d.0) < a.0.max(b.0) + gap
+    } else {
+        (a.0 - c.0).abs() < gap
+            && a.1.min(b.1) < c.1.max(d.1) + gap
+            && c.1.min(d.1) < a.1.max(b.1) + gap
+    }
 }
 
 fn vehicles_overlap(a: &Vehicle, b: &Vehicle) -> bool {
